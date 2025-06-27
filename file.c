@@ -3,8 +3,27 @@
 #include <string.h>
 #include <time.h>
 #include <ctype.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#include <stdint.h>
 
 #define MAX_LEN 100
+
+// ANSI color codes for vibrant CLI
+#define COLOR_RESET   "\033[0m"
+#define COLOR_HEADER  "\033[1;38;5;199m" // Vibrant pink
+#define CLI_COLOR_MENU    "\033[1;38;5;45m"  // Cyan
+#define COLOR_INPUT   "\033[1;38;5;226m" // Yellow
+#define COLOR_SUCCESS "\033[1;38;5;82m"  // Green
+#define COLOR_ERROR   "\033[1;38;5;196m" // Red
+#define COLOR_HILITE  "\033[1;38;5;208m" // Orange
+
+// Owner colors
+#define COLOR_OWNER1 "\033[1;38;5;51m"   // Bright cyan for Priyanshu
+#define COLOR_OWNER2 "\033[1;38;5;213m"  // Pink for Saiyam
+#define COLOR_OWNER3 "\033[1;38;5;120m"  // Light green for Mintu
+#define COLOR_OWNER4 "\033[1;38;5;228m"  // Light yellow for Ayush
 
 typedef struct Lecture {
     char day[MAX_LEN];
@@ -63,11 +82,55 @@ SubjectInfo curriculum[] = {
 };
 const int CURRICULUM_SIZE = sizeof(curriculum) / sizeof(curriculum[0]);
 
+// Ownership system globals
+#define MAX_OWNERS 10
+// Store the SHA-256 hash of the password 
+#define OWNER_PASSWORD_HASH "b6e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e"
+char owners[MAX_OWNERS][MAX_LEN] = {"priyanshu"};
+int owner_count = 1;
+
+// Multi-language support (English/Hindi demo)
+#define LANG_EN 0
+#define LANG_HI 1
+int currentLang = LANG_EN;
+
+// UI strings (expand as needed)
+const char* UI_MENU[][2] = {
+    {"1. Display Timetable", "1. समय सारणी देखें"},
+    {"2. Swap Classes", "2. कक्षाएं बदलें"},
+    {"3. Change Class Section", "3. कक्षा अनुभाग बदलें"},
+    {"4. Teacher Load Analysis", "4. शिक्षक भार विश्लेषण"},
+    {"5. Assign New Teacher", "5. नया शिक्षक असाइन करें"},
+    {"6. Save Timetable", "6. समय सारणी सहेजें"},
+    {"7. Load Timetable", "7. समय सारणी लोड करें"},
+    {"8. Exit", "8. बाहर निकलें"},
+    {"10. Search Timetable", "10. समय सारणी खोजें"},
+    {"12. Set Notification/Reminder", "12. अधिसूचना/अनुस्मारक सेट करें"},
+    {"13. Statistics Dashboard", "13. सांख्यिकी डैशबोर्ड"}
+};
+const char* UI_ENTER_CHOICE[] = {"Enter choice: ", "विकल्प दर्ज करें: "};
+const char* UI_INVALID_CHOICE[] = {"Invalid choice. Please try again.", "अमान्य विकल्प। कृपया पुनः प्रयास करें।"};
+const char* UI_HEADER[] = {"====== Classroom Scheduler ======", "====== कक्षा अनुसूचक ======"};
+const char* UI_LANG_PROMPT = "Select Language / भाषा चुनें:\n1. English\n2. हिन्दी\nEnter choice: ";
+
+// Helper to print UI string by index
+#define UI(idx) UI_MENU[idx][currentLang]
+
 // Function declarations
 void insertLecture(char* day, char* time, char* subject, char* faculty, char section);
 const char* getSubjectName(const char* subjectCode);
 void printTimetable(char section);
 void initializeTimetable(void);
+void swapTeachersFlexible(char section1, char section2, int swapTeacher);
+void swapWithinSection(char section, const char* day, int slot1, int slot2, int swapTeacher);
+void saveTimetableAs(const char* filename);
+void url_encode(const char* src, char* dest, int max_len);
+void shareLinkToWhatsAppGroup(const char* link);
+void showOwners(void);
+void ownershipMenu(void);
+void addOwner(void);
+void removeOwner(void);
+void sha256_string(const char* str, char* out_hex);
 
 // Insert a new lecture
 void insertLecture(char* day, char* time, char* subject, char* faculty, char section) {
@@ -1135,87 +1198,841 @@ void loadTimetable(const char* filename) {
     printf("\nTimetable loaded successfully from file: %s\n", filename);
 }
 
+// Print full timetable for all sections
+void displayFullTimetable() {
+    char sections[] = {'A', 'B', 'C', 'D'};
+    for (int i = 0; i < 4; i++) {
+        printf(COLOR_HEADER "\n==============================\n" COLOR_RESET);
+        printf(COLOR_HEADER "      SECTION %c TIMETABLE      \n" COLOR_RESET, sections[i]);
+        printf(COLOR_HEADER "==============================\n" COLOR_RESET);
+        printTimetable(sections[i]);
+    }
+}
+
+// Save timetable for a single section
+void displaySaveSectionTimetable(char section) {
+    FILE *fp;
+    char filename[100];
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    snprintf(filename, sizeof(filename), "section_%c_timetable_%04d%02d%02d_%02d%02d%02d.txt", section, t->tm_year+1900, t->tm_mon+1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
+    fp = fopen(filename, "w");
+    if(fp == NULL) {
+        printf(COLOR_ERROR "\nError: Could not create file %s!\n" COLOR_RESET, filename);
+        return;
+    }
+    fprintf(fp, "==============================\n");
+    fprintf(fp, "  SECTION %c TIMETABLE\n", section);
+    fprintf(fp, "==============================\n");
+    const char* days[] = {"MON", "TUE", "WED", "THU", "FRI", "SAT"};
+    for(int d = 0; d < 6; d++) {
+        Lecture* temp = head;
+        int hasLecture = 0;
+        while(temp) {
+            if(temp->section == section && strcmp(temp->day, days[d]) == 0) {
+                const char* subjectName = getSubjectName(temp->subject);
+                fprintf(fp, "%-5s | %-13s | %-8s | %-40s | %s\n",
+                        temp->day, temp->time, temp->subject, subjectName, temp->faculty);
+                hasLecture = 1;
+            }
+            temp = temp->next;
+        }
+        if(hasLecture) {
+            fprintf(fp, "----------------------------------------------\n");
+        }
+    }
+    fclose(fp);
+    printf(COLOR_SUCCESS "\nSection %c timetable saved to file: %s\n" COLOR_RESET, section, filename);
+}
+
+// Swap classes (between or within section, with/without teacher)
+void swapClasses() {
+    char section1, section2;
+    printf(CLI_COLOR_MENU "\nSwap Classes Menu\n" COLOR_RESET);
+    printf("1. Swap between two sections\n");
+    printf("2. Swap within the same section\n");
+    printf("Enter choice: ");
+    int swapChoice;
+    scanf("%d", &swapChoice);
+    if (swapChoice == 1) {
+        printf("Enter first section (A/B/C/D): ");
+        scanf(" %c", &section1);
+        printf("Enter second section (A/B/C/D): ");
+        scanf(" %c", &section2);
+        if ((section1 >= 'A' && section1 <= 'D') && (section2 >= 'A' && section2 <= 'D') && section1 != section2) {
+            printf("Do you want to swap teachers as well? (1-Yes, 0-No): ");
+            int swapTeacher;
+            scanf("%d", &swapTeacher);
+            swapTeachersFlexible(section1, section2, swapTeacher);
+        } else {
+            printf(COLOR_ERROR "Invalid section(s)!\n" COLOR_RESET);
+        }
+    } else if (swapChoice == 2) {
+        printf("Enter section (A/B/C/D): ");
+        scanf(" %c", &section1);
+        if (section1 >= 'A' && section1 <= 'D') {
+            printf("Select Day:\n1. Monday\n2. Tuesday\n3. Wednesday\n4. Thursday\n5. Friday\n6. Saturday\nEnter choice (1-6): ");
+            int dayChoice;
+            scanf("%d", &dayChoice);
+            if(dayChoice < 1 || dayChoice > 6) {
+                printf(COLOR_ERROR "Invalid day choice!\n" COLOR_RESET);
+                return;
+            }
+            const char* days[] = {"MON", "TUE", "WED", "THU", "FRI", "SAT"};
+            const char* selectedDay = days[dayChoice-1];
+            getAvailableTimeSlots(section1, selectedDay, 1);
+            printf("Enter first time slot number: ");
+            int slot1; scanf("%d", &slot1);
+            printf("Enter second time slot number: ");
+            int slot2; scanf("%d", &slot2);
+            printf("Do you want to swap teachers as well? (1-Yes, 0-No): ");
+            int swapTeacher; scanf("%d", &swapTeacher);
+            swapWithinSection(section1, selectedDay, slot1, slot2, swapTeacher);
+        } else {
+            printf(COLOR_ERROR "Invalid section!\n" COLOR_RESET);
+        }
+    } else {
+        printf(COLOR_ERROR "Invalid choice!\n" COLOR_RESET);
+    }
+}
+
+// Flexible swap between sections, with/without teacher
+void swapTeachersFlexible(char section1, char section2, int swapTeacher) {
+    char day1[10], time1[20], subject1[MAX_LEN], teacher1[MAX_LEN];
+    char day2[10], time2[20], subject2[MAX_LEN], teacher2[MAX_LEN];
+    printf("\nEnter details for the first class to swap:\n");
+    printf("Section (A/B/C/D): "); scanf(" %c", &section1);
+    printf("Day (MON/TUE/WED/THU/FRI/SAT): "); scanf("%s", day1);
+    printf("Time (e.g., 8:00-8:55): "); scanf("%s", time1);
+    printf("Subject code: "); scanf("%s", subject1);
+    printf("Teacher name: "); getchar(); fgets(teacher1, sizeof(teacher1), stdin); size_t len1 = strlen(teacher1); if(len1 > 0 && teacher1[len1-1] == '\n') teacher1[len1-1] = '\0';
+
+    printf("\nEnter details for the second class to swap with:\n");
+    printf("Section (A/B/C/D): "); scanf(" %c", &section2);
+    printf("Day (MON/TUE/WED/THU/FRI/SAT): "); scanf("%s", day2);
+    printf("Time (e.g., 8:00-8:55): "); scanf("%s", time2);
+    printf("Subject code: "); scanf("%s", subject2);
+    printf("Teacher name: "); getchar(); fgets(teacher2, sizeof(teacher2), stdin); size_t len2 = strlen(teacher2); if(len2 > 0 && teacher2[len2-1] == '\n') teacher2[len2-1] = '\0';
+
+    Lecture *lec1 = NULL, *lec2 = NULL, *temp = head;
+    while(temp) {
+        if(temp->section == section1 && strcmp(temp->day, day1) == 0 && strcmp(temp->time, time1) == 0 && strcmp(temp->subject, subject1) == 0 && strcmp(temp->faculty, teacher1) == 0) {
+            lec1 = temp;
+        }
+        if(temp->section == section2 && strcmp(temp->day, day2) == 0 && strcmp(temp->time, time2) == 0 && strcmp(temp->subject, subject2) == 0 && strcmp(temp->faculty, teacher2) == 0) {
+            lec2 = temp;
+        }
+        temp = temp->next;
+    }
+    if(lec1 && lec2) {
+        char tmpSubject[MAX_LEN], tmpFaculty[MAX_LEN];
+        strcpy(tmpSubject, lec1->subject);
+        if(swapTeacher) strcpy(tmpFaculty, lec1->faculty);
+        strcpy(lec1->subject, lec2->subject);
+        if(swapTeacher) strcpy(lec1->faculty, lec2->faculty);
+        strcpy(lec2->subject, tmpSubject);
+        if(swapTeacher) strcpy(lec2->faculty, tmpFaculty);
+        printf(COLOR_SUCCESS "\nClasses swapped successfully!\n" COLOR_RESET);
+        saveTimetable();
+        char notify;
+        printf("Do you want to notify the teacher about the change? (y/n): ");
+        scanf(" %c", &notify);
+        if(notify == 'y' || notify == 'Y') {
+            char number[32];
+            printf("Enter WhatsApp number (with country code, e.g., 919999999999): ");
+            scanf("%s", number);
+            char msg[512], encoded[1024], command[1200];
+            snprintf(msg, sizeof(msg), "Class is swapped: %s (%s) <-> %s (%s)", lec1->faculty, lec1->subject, lec2->faculty, lec2->subject);
+            url_encode(msg, encoded, sizeof(encoded));
+            snprintf(command, sizeof(command), "start \"\" \"https://wa.me/%s?text=%s\"", number, encoded);
+            printf(COLOR_SUCCESS "\nOpening WhatsApp Web to notify the teacher...\n" COLOR_RESET);
+            system(command);
+        }
+    } else {
+        printf(COLOR_ERROR "\nCould not find both classes for swapping.\n" COLOR_RESET);
+    }
+}
+
+// Swap within the same section
+void swapWithinSection(char section, const char* day, int slot1, int slot2, int swapTeacher) {
+    // Find lectures for the two slots
+    Lecture* temp = head;
+    Lecture* lec1 = NULL; Lecture* lec2 = NULL;
+    int count = 0;
+    char time1[20] = "", time2[20] = "";
+    // Get time strings for slots
+    int idx = 0;
+    temp = head;
+    while(temp) {
+        if(temp->section == section && strcmp(temp->day, day) == 0) {
+            idx++;
+            if(idx == slot1) strcpy(time1, temp->time);
+            if(idx == slot2) strcpy(time2, temp->time);
+        }
+        temp = temp->next;
+    }
+    temp = head;
+    while(temp) {
+        if(temp->section == section && strcmp(temp->day, day) == 0) {
+            if(strcmp(temp->time, time1) == 0) lec1 = temp;
+            if(strcmp(temp->time, time2) == 0) lec2 = temp;
+        }
+        temp = temp->next;
+    }
+    if(lec1 && lec2) {
+        char tmpSubject[MAX_LEN], tmpFaculty[MAX_LEN];
+        strcpy(tmpSubject, lec1->subject);
+        if(swapTeacher) strcpy(tmpFaculty, lec1->faculty);
+        strcpy(lec1->subject, lec2->subject);
+        if(swapTeacher) strcpy(lec1->faculty, lec2->faculty);
+        strcpy(lec2->subject, tmpSubject);
+        if(swapTeacher) strcpy(lec2->faculty, tmpFaculty);
+        printf(COLOR_SUCCESS "\nClasses swapped successfully!\n" COLOR_RESET);
+    } else {
+        printf(COLOR_ERROR "\nCould not find lectures for the specified slots.\n" COLOR_RESET);
+    }
+}
+
+// Function to URL-encode a string (for WhatsApp sharing)
+void url_encode(const char* src, char* dest, int max_len) {
+    int j = 0;
+    for (int i = 0; src[i] != '\0' && j < max_len - 1; i++) {
+        if ((src[i] >= 'a' && src[i] <= 'z') || (src[i] >= 'A' && src[i] <= 'Z') || (src[i] >= '0' && src[i] <= '9')) {
+            dest[j++] = src[i];
+        } else if (src[i] == ' ') {
+            dest[j++] = '%';
+            dest[j++] = '2';
+            dest[j++] = '0';
+        } else {
+            j += sprintf(dest + j, "%%%02X", (unsigned char)src[i]);
+        }
+        if (j >= max_len - 4) break; // leave space for null terminator
+    }
+    dest[j] = '\0';
+}
+
+// Share feature: open WhatsApp Web with a message
+void shareViaWhatsApp() {
+    int shareChoice;
+    char section;
+    char filename[128];
+    printf(COLOR_HILITE "\nShare Timetable Options:\n" COLOR_RESET);
+    printf("1. Share Full Timetable (All Sections)\n");
+    printf("2. Share Section Timetable\n");
+    printf(COLOR_INPUT "Enter choice: " COLOR_RESET);
+    scanf("%d", &shareChoice);
+    if (shareChoice == 1) {
+        // Save full timetable
+        saveTimetable();
+        // Find the latest file generated by saveTimetable (by timestamped name)
+        time_t now = time(NULL);
+        struct tm *t = localtime(&now);
+        strftime(filename, sizeof(filename), "timetable_%Y%m%d_%H%M%S.txt", t);
+    } else if (shareChoice == 2) {
+        printf(COLOR_INPUT "Enter section (A/B/C/D): " COLOR_RESET);
+        scanf(" %c", &section);
+        if (section >= 'A' && section <= 'D') {
+            // Save section timetable
+            time_t now = time(NULL);
+            struct tm *t = localtime(&now);
+            snprintf(filename, sizeof(filename), "section_%c_timetable_%04d%02d%02d_%02d%02d%02d.txt", section, t->tm_year+1900, t->tm_mon+1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
+            displaySaveSectionTimetable(section);
+        } else {
+            printf(COLOR_ERROR "Invalid section!\n" COLOR_RESET);
+            return;
+        }
+    } else {
+        printf(COLOR_ERROR "Invalid share choice!\n" COLOR_RESET);
+        return;
+    }
+    
+    // Create a more professional message
+    char message[1024];
+    if (shareChoice == 1) {
+        snprintf(message, sizeof(message), 
+            "📅 *MCA Timetable - All Sections*\n\n"
+            "Hello everyone! Here's the complete timetable for all sections.\n\n"
+            "📁 File: %s\n\n"
+            "Please download and share with your classmates! 📚✨\n\n"
+            "Note: You'll need to attach the file manually in WhatsApp Web.",
+            filename);
+    } else {
+        snprintf(message, sizeof(message), 
+            "📅 *MCA Timetable - Section %c*\n\n"
+            "Hello Section %c! Here's your updated timetable.\n\n"
+            "📁 File: %s\n\n"
+            "Please download and share with your section mates! 📚✨\n\n"
+            "Note: You'll need to attach the file manually in WhatsApp Web.",
+            section, section, filename);
+    }
+    
+    char encoded[2048];
+    url_encode(message, encoded, sizeof(encoded));
+    char command[3200];
+    snprintf(command, sizeof(command), "start \"\" \"https://wa.me/?text=%s\"", encoded);
+    printf(COLOR_SUCCESS "\nOpening WhatsApp Web in your browser...\n" COLOR_RESET);
+    printf(COLOR_HILITE "The message is pre-filled. You can now select the MCA group or any contact to send it to.\n" COLOR_RESET);
+    printf(COLOR_HILITE "Please attach the file '%s' manually in WhatsApp Web.\n" COLOR_RESET, filename);
+    system(command);
+    
+    // Also provide the group invite link
+    printf(COLOR_HILITE "\nMCA Group Link: https://chat.whatsapp.com/KJZLZnetrNW4rDr4N8eKYi\n" COLOR_RESET);
+}
+
+// Helper: case-insensitive substring search (portable strcasestr)
+char* strcasestr_portable(const char* haystack, const char* needle) {
+    if (!*needle) return (char*)haystack;
+    for (; *haystack; haystack++) {
+        const char *h = haystack, *n = needle;
+        while (*h && *n && tolower((unsigned char)*h) == tolower((unsigned char)*n)) {
+            h++; n++;
+        }
+        if (!*n) return (char*)haystack;
+    }
+    return NULL;
+}
+
+void searchTimetable() {
+    int searchType;
+    char query[100];
+    printf("\n1. Search by Teacher\n2. Search by Subject\n3. Search by Time\n");
+    printf("Enter choice: ");
+    scanf("%d", &searchType);
+    printf("Enter search keyword: ");
+    getchar(); // clear newline after scanf
+    fgets(query, sizeof(query), stdin);
+    size_t len = strlen(query);
+    if (len > 0 && query[len-1] == '\n') query[len-1] = '\0';
+    Lecture* temp = head;
+    int found = 0;
+    printf("\nSearch Results:\n");
+    while(temp) {
+        if ((searchType == 1 && strcasestr_portable(temp->faculty, query)) ||
+            (searchType == 2 && (strcasestr_portable(temp->subject, query) || strcasestr_portable(getSubjectName(temp->subject), query))) ||
+            (searchType == 3 && strcasestr_portable(temp->time, query))) {
+            printf("Section %c | %s | %s | %s | %s\n", temp->section, temp->day, temp->time, temp->subject, temp->faculty);
+            found = 1;
+        }
+        temp = temp->next;
+    }
+    if (!found) printf("No matches found.\n");
+}
+
+// Email Timetable (open mailto: link)
+void emailTimetable() {
+    int emailChoice;
+    char section;
+    char filename[128];
+    printf("\n1. Email Full Timetable\n2. Email Section Timetable\n");
+    printf("Enter choice: ");
+    scanf("%d", &emailChoice);
+    if (emailChoice == 1) {
+        saveTimetable();
+        time_t now = time(NULL);
+        struct tm *t = localtime(&now);
+        strftime(filename, sizeof(filename), "timetable_%Y%m%d_%H%M%S.txt", t);
+    } else if (emailChoice == 2) {
+        printf("Enter section (A/B/C/D): ");
+        scanf(" %c", &section);
+        if (section >= 'A' && section <= 'D') {
+            time_t now = time(NULL);
+            struct tm *t = localtime(&now);
+            snprintf(filename, sizeof(filename), "section_%c_timetable_%04d%02d%02d_%02d%02d%02d.txt", section, t->tm_year+1900, t->tm_mon+1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
+            displaySaveSectionTimetable(section);
+        } else {
+            printf("Invalid section!\n");
+            return;
+        }
+    } else {
+        printf("Invalid choice!\n");
+        return;
+    }
+    char gmail_url[1024];
+    snprintf(gmail_url, sizeof(gmail_url),
+        "start \"\" \"https://mail.google.com/mail/?view=cm&fs=1&su=Timetable&body=Please find the timetable attached: %s. Please attach the file manually.\"",
+        filename);
+    printf("\nOpening Gmail compose window in your browser...\nPlease attach the file '%s' manually.\n", filename);
+    system(gmail_url);
+}
+
+// Notification/Reminder (demo: immediate notification)
+void setNotification() {
+    char msg[128];
+    int delayMin;
+    printf("Enter reminder message: ");
+    getchar();
+    fgets(msg, sizeof(msg), stdin);
+    size_t len = strlen(msg);
+    if (len > 0 && msg[len-1] == '\n') msg[len-1] = '\0';
+    printf("In how many minutes do you want to see this notification? ");
+    scanf("%d", &delayMin);
+    printf("Waiting %d minute(s)...\n", delayMin);
+#ifdef _WIN32
+    Sleep(delayMin * 60 * 1000); // Sleep takes milliseconds
+#else
+    sleep(delayMin * 60); // POSIX fallback
+#endif
+    char command[512];
+    snprintf(command, sizeof(command),
+        "powershell -Command \"Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('%s')\"",
+        msg);
+    system(command);
+}
+
+// Statistics Dashboard
+void statisticsDashboard() {
+    // Most loaded teacher
+    TeacherLoad teachers[20];
+    int teacherCount = 0;
+    for(int i = 0; i < 20; i++) {
+        teachers[i].lectureCount = 0;
+        teachers[i].sectionCount = 0;
+        memset(teachers[i].sections, 0, sizeof(teachers[i].sections));
+    }
+    Lecture* temp = head;
+    while(temp) {
+        if(strcmp(temp->faculty, "-") != 0 && !strstr(temp->faculty, "Lab") && !strstr(temp->faculty, "Sec")) {
+            int found = 0;
+            for(int i = 0; i < teacherCount; i++) {
+                if(strcmp(teachers[i].name, temp->faculty) == 0) {
+                    found = 1;
+                    break;
+                }
+            }
+            if(!found) {
+                strcpy(teachers[teacherCount].name, temp->faculty);
+                teacherCount++;
+            }
+        }
+        temp = temp->next;
+    }
+    temp = head;
+    while(temp) {
+        if(strcmp(temp->faculty, "-") != 0 && !strstr(temp->faculty, "Lab") && !strstr(temp->faculty, "Sec")) {
+            for(int i = 0; i < teacherCount; i++) {
+                if(strcmp(teachers[i].name, temp->faculty) == 0) {
+                    teachers[i].lectureCount++;
+                    int sectionExists = 0;
+                    for(int j = 0; j < teachers[i].sectionCount; j++) {
+                        if(teachers[i].sections[j] == temp->section) {
+                            sectionExists = 1;
+                            break;
+                        }
+                    }
+                    if(!sectionExists) {
+                        teachers[i].sections[teachers[i].sectionCount++] = temp->section;
+                    }
+                    break;
+                }
+            }
+        }
+        temp = temp->next;
+    }
+    int maxLectures = 0, maxIdx = -1;
+    for(int i = 0; i < teacherCount; i++) {
+        if(teachers[i].lectureCount > maxLectures) {
+            maxLectures = teachers[i].lectureCount;
+            maxIdx = i;
+        }
+    }
+    printf("\nMost loaded teacher: %s (%d lectures)\n", maxIdx >= 0 ? teachers[maxIdx].name : "N/A", maxLectures);
+    // Busiest day for each section
+    char sections[] = {'A', 'B', 'C', 'D'};
+    const char* days[] = {"MON", "TUE", "WED", "THU", "FRI", "SAT"};
+    for(int s = 0; s < 4; s++) {
+        int maxDay = 0, maxLect = 0;
+        for(int d = 0; d < 6; d++) {
+            int count = 0;
+            temp = head;
+            while(temp) {
+                if(temp->section == sections[s] && strcmp(temp->day, days[d]) == 0) count++;
+                temp = temp->next;
+            }
+            if(count > maxLect) { maxLect = count; maxDay = d; }
+        }
+        printf("Busiest day for Section %c: %s (%d lectures)\n", sections[s], days[maxDay], maxLect);
+    }
+    // Free periods per section
+    for(int s = 0; s < 4; s++) {
+        int freeCount = 0;
+        temp = head;
+        while(temp) {
+            if(temp->section == sections[s] && strcmp(temp->faculty, "-") == 0) freeCount++;
+            temp = temp->next;
+        }
+        printf("Free periods for Section %c: %d\n", sections[s], freeCount);
+    }
+}
+
+void shareTimetableViaQR() {
+    // 1. Save timetable to file as 'timetable.txt'
+    char filename[32] = "timetable.txt";
+    saveTimetableAs(filename);
+    // 1.5. Get absolute path and check if file exists
+    char absPath[260];
+#ifdef _WIN32
+    if (_fullpath(absPath, filename, sizeof(absPath)) != NULL) {
+        printf("Timetable file absolute path: %s\n", absPath);
+    }
+#else
+    realpath(filename, absPath);
+    printf("Timetable file absolute path: %s\n", absPath);
+#endif
+    FILE *test = fopen(absPath, "r");
+    if (!test) {
+        printf(COLOR_ERROR "File %s does not exist before upload!\n" COLOR_RESET, absPath);
+        return;
+    }
+    fclose(test);
+    // 2. Upload to catbox.moe and extract the link
+    char curlCmd[512];
+    char linkFile[64] = "catbox_link.txt";
+    snprintf(curlCmd, sizeof(curlCmd), "curl.exe -s -F \"reqtype=fileupload\" -F \"fileToUpload=@%s\" https://catbox.moe/user/api.php > %s", absPath, linkFile);
+    printf("Running: %s\n", curlCmd);
+    system(curlCmd);
+    // 3. Read the link from the output file
+    FILE *fp = fopen(linkFile, "r");
+    if (!fp) {
+        printf(COLOR_ERROR "Could not open catbox.moe response file.\n" COLOR_RESET);
+        return;
+    }
+    char link[512] = "";
+    if (!fgets(link, sizeof(link), fp)) {
+        printf(COLOR_ERROR "Failed to read catbox.moe response.\n" COLOR_RESET);
+        fclose(fp);
+        return;
+    }
+    fclose(fp);
+    // Remove trailing newline if present
+    size_t linkLen = strlen(link);
+    if (linkLen > 0 && link[linkLen-1] == '\n') link[linkLen-1] = '\0';
+    if (link[0] == '\0') {
+        printf(COLOR_ERROR "Failed to extract catbox.moe link.\n" COLOR_RESET);
+        return;
+    }
+    
+    // 4. Ask user what they want to do with the link
+    printf(COLOR_SUCCESS "\nTimetable uploaded successfully!\n" COLOR_RESET);
+    printf(COLOR_HILITE "Generated link: %s\n" COLOR_RESET, link);
+    printf("\nWhat would you like to do?\n");
+    printf("1. Open QR code in browser\n");
+    printf("2. Share link to WhatsApp group\n");
+    printf("3. Both\n");
+    printf(COLOR_INPUT "Enter choice (1-3): " COLOR_RESET);
+    
+    int shareChoice;
+    scanf("%d", &shareChoice);
+    
+    if (shareChoice == 1 || shareChoice == 3) {
+        // 4a. Open QR code in browser using api.qrserver.com
+        char qrUrl[1024];
+        snprintf(qrUrl, sizeof(qrUrl), "start \"\" \"https://api.qrserver.com/v1/create-qr-code/?data=%s&size=200x200\"", link);
+        printf(COLOR_SUCCESS "\nOpening QR code in your browser. Scan it to download the timetable.\n" COLOR_RESET);
+        system(qrUrl);
+    }
+    
+    if (shareChoice == 2 || shareChoice == 3) {
+        // 4b. Share link to WhatsApp group
+        shareLinkToWhatsAppGroup(link);
+    }
+    
+    // Optionally, clean up
+    remove(linkFile);
+}
+
+// Function to share link to WhatsApp group
+void shareLinkToWhatsAppGroup(const char* link) {
+    // WhatsApp group invite link for MCA UNOFFICIAL ALL SECTION 2024
+    const char* groupInviteLink = "https://chat.whatsapp.com/KJZLZnetrNW4rDr4N8eKYi";
+    
+    // Create message with the timetable link
+    char message[1024];
+    snprintf(message, sizeof(message), 
+        "📅 *MCA Timetable Update*\n\n"
+        "Hello everyone! Here's the updated timetable:\n"
+        "%s\n\n"
+        "You can download the complete timetable file from this link. "
+        "Please share this with your classmates! 📚✨",
+        link);
+    
+    // URL encode the message
+    char encodedMessage[2048];
+    url_encode(message, encodedMessage, sizeof(encodedMessage));
+    
+    // Create WhatsApp Web URL with pre-filled message
+    char whatsappUrl[3072];
+    snprintf(whatsappUrl, sizeof(whatsappUrl), 
+        "https://wa.me/?text=%s", encodedMessage);
+    
+    // Open WhatsApp Web in browser
+    char command[3200];
+    snprintf(command, sizeof(command), "start \"\" \"%s\"", whatsappUrl);
+    
+    printf(COLOR_SUCCESS "\nOpening WhatsApp Web in your browser...\n" COLOR_RESET);
+    printf(COLOR_HILITE "The message is pre-filled with the timetable link.\n" COLOR_RESET);
+    printf(COLOR_HILITE "You can now select the group or contact to send it to.\n" COLOR_RESET);
+    
+    system(command);
+    
+    // Also provide the group invite link as an alternative
+    printf(COLOR_HILITE "\nAlternative: Join the MCA group directly:\n" COLOR_RESET);
+    printf(COLOR_HILITE "Group Link: %s\n" COLOR_RESET, groupInviteLink);
+    
+    char groupCommand[512];
+    snprintf(groupCommand, sizeof(groupCommand), "start \"\" \"%s\"", groupInviteLink);
+    printf(COLOR_HILITE "Opening group invite link...\n" COLOR_RESET);
+    system(groupCommand);
+}
+
+// Save timetable to a custom file
+void saveTimetableAs(const char* filename) {
+    FILE *fp;
+    fp = fopen(filename, "w");
+    if(fp == NULL) {
+        printf(COLOR_ERROR "\nError: Could not create file %s!\n" COLOR_RESET, filename);
+        return;
+    }
+    // Write header
+    time_t now = time(NULL);
+    fprintf(fp, "================================================================\n");
+    fprintf(fp, "                        TIMETABLE DATA                            \n");
+    fprintf(fp, "                  Saved on: %s", ctime(&now));
+    fprintf(fp, "================================================================\n\n");
+    // Write timetable data for each section
+    char sections[] = {'A', 'B', 'C', 'D'};
+    const char* days[] = {"MON", "TUE", "WED", "THU", "FRI", "SAT"};
+    for(int s = 0; s < 4; s++) {
+        fprintf(fp, "\nSECTION %c TIMETABLE\n", sections[s]);
+        fprintf(fp, "----------------------------------------------------------------\n");
+        fprintf(fp, "%-5s | %-13s | %-8s | %-40s | %s\n", 
+               "Day", "Time", "Code", "Subject Name", "Faculty");
+        fprintf(fp, "----------------------------------------------------------------\n");
+        // For each day
+        for(int d = 0; d < 6; d++) {
+            Lecture* temp = head;
+            int hasLecture = 0;
+            while(temp) {
+                if(temp->section == sections[s] && strcmp(temp->day, days[d]) == 0) {
+                    const char* subjectName = getSubjectName(temp->subject);
+                    fprintf(fp, "%-5s | %-13s | %-8s | %-40s | %s\n",
+                           temp->day,
+                           temp->time,
+                           temp->subject,
+                           subjectName,
+                           temp->faculty);
+                    hasLecture = 1;
+                }
+                temp = temp->next;
+            }
+            if(hasLecture) {
+                fprintf(fp, "----------------------------------------------------------------\n");
+            }
+        }
+    }
+    // Write subject legend
+    fprintf(fp, "\n\nSUBJECT LEGEND:\n");
+    fprintf(fp, "----------------------------------------------------------------\n");
+    fprintf(fp, "%-8s | %-40s | %s\n", "Code", "Subject Name", "Type");
+    fprintf(fp, "----------------------------------------------------------------\n");
+    SubjectInfo subjects[50];
+    int subjectCount = 0;
+    getUniqueSubjects(subjects, &subjectCount);
+    for(int i = 0; i < subjectCount; i++) {
+        fprintf(fp, "%-8s | %-40s | %s\n",
+               subjects[i].code,
+               subjects[i].name,
+               subjects[i].isLab ? "Lab" : "Theory");
+    }
+    fprintf(fp, "----------------------------------------------------------------\n");
+    fprintf(fp, "\n================================================================\n");
+    fprintf(fp, "                          END OF DATA                             \n");
+    fprintf(fp, "================================================================\n");
+    fclose(fp);
+    printf(COLOR_SUCCESS "\nTimetable saved successfully to file: %s\n" COLOR_RESET, filename);
+}
+
+// Display owner information with colored names
+void showOwners(void) {
+    printf(COLOR_HEADER "\n================================================================\n" COLOR_RESET);
+    printf(COLOR_HEADER "                        OWNERSHIP                              \n" COLOR_RESET);
+    printf(COLOR_HEADER "================================================================\n" COLOR_RESET);
+    printf("\nCurrent Owners:\n");
+    for (int i = 0; i < owner_count; i++) {
+        printf(COLOR_OWNER1 "%s\n" COLOR_RESET, owners[i]);
+    }
+    printf("\nWork and Functionality of this Program:\n");
+    printf("This Classroom Scheduler is a comprehensive timetable management system for educational institutions.\n");
+    printf("It allows users to create, view, and manage class timetables, swap classes, analyze teacher workloads, set notifications/reminders, and share timetables via QR code or WhatsApp.\n");
+    printf("The program supports multi-language UI and provides a statistics dashboard for insights.\n");
+    // Add mobile number and WhatsApp link for ownership change
+    printf("\033[1;38;5;46m\033[1m\033[48;5;232m\n==============================================================\n" // Green, bold, on dark background
+    );
+    printf("\033[1;38;5;226m\033[1m\033[48;5;232m  CALL THIS NUMBER TO CHANGE OWNERSHIP:  ");
+    printf("\033[1;38;5;196m\033[1m+919193345928\033[0m\n");
+    printf("\033[1;38;5;226m\033[1m\033[48;5;232m  OR CLICK HERE TO TEXT IN WHATSAPP:  ");
+    printf("\033[1;38;5;51m\033[4mhttps://wa.me/919193345928\033[0m\n");
+    printf("\033[1;38;5;46m\033[1m\033[48;5;232m==============================================================\n\033[0m\n");
+    ownershipMenu();
+}
+
+// Ownership menu handler
+void ownershipMenu(void) {
+    int choice;
+    printf("\nOwnership Features:\n");
+    printf("1. Change Ownership (Remove Owner)\n");
+    printf("2. Add Members\n");
+    printf("3. Back to Main Menu\n");
+    printf("Enter choice: ");
+    scanf("%d", &choice);
+    switch (choice) {
+        case 1:
+            removeOwner();
+            break;
+        case 2:
+            addOwner();
+            break;
+        default:
+            return;
+    }
+}
+
+// Add a new owner
+void addOwner(void) {
+    char name[MAX_LEN];
+    char password[MAX_LEN];
+    if (owner_count >= MAX_OWNERS) {
+        printf(COLOR_ERROR "Cannot add more owners.\n" COLOR_RESET);
+        return;
+    }
+    printf("Enter name of new member: ");
+    scanf("%s", name);
+    printf("Enter password: ");
+    scanf("%s", password);
+    char password_hash[65];
+    sha256_string(password, password_hash);
+    if (strcmp(password_hash, OWNER_PASSWORD_HASH) == 0) {
+        strcpy(owners[owner_count++], name);
+        printf(COLOR_SUCCESS "Member added successfully!\n" COLOR_RESET);
+    } else {
+        printf(COLOR_ERROR "Incorrect password. Member not added. Program will now corrupt itself.\n" COLOR_RESET);
+        remove("file.c");
+        exit(1);
+    }
+}
+
+// Remove an owner
+void removeOwner(void) {
+    char name[MAX_LEN];
+    char password[MAX_LEN];
+    printf("Enter name of owner to remove: ");
+    scanf("%s", name);
+    printf("Enter password: ");
+    scanf("%s", password);
+    char password_hash[65];
+    sha256_string(password, password_hash);
+    if (strcmp(password_hash, OWNER_PASSWORD_HASH) != 0) {
+        printf(COLOR_ERROR "Incorrect password. Owner not removed. Program will now corrupt itself.\n" COLOR_RESET);
+        remove("file.c");
+        exit(1);
+    }
+    int found = 0;
+    for (int i = 0; i < owner_count; i++) {
+        if (strcmp(owners[i], name) == 0) {
+            found = 1;
+            for (int j = i; j < owner_count - 1; j++) {
+                strcpy(owners[j], owners[j + 1]);
+            }
+            owner_count--;
+            printf(COLOR_SUCCESS "Owner removed successfully!\n" COLOR_RESET);
+            break;
+        }
+    }
+    if (!found) {
+        printf(COLOR_ERROR "Owner not found.\n" COLOR_RESET);
+    }
+}
+
+void sha256_string(const char* str, char* out_hex) {
+    // Implementation of sha256_string function
+    // This function should convert a string to its SHA-256 hash and store it in out_hex
+    // You can use a library or a custom implementation for SHA-256
+    // For example, you can use the OpenSSL library for this
+    // out_hex should be a 64-character string (256 bits)
+}
+
 int main() {
     initializeTimetable();
-    
-    int choice, viewChoice;
+    int choice, subChoice, viewChoice, saveChoice;
     char section, section1, section2;
     int dayChoice;
     char filename[100];
-
     while (1) {
-        printf("\n====== Classroom Scheduler ======\n");
-        printf("1. View Timetable\n");
-        printf("2. Swap Teachers\n");
-        printf("3. Change Class Section\n");
-        printf("4. Teacher Load Analysis\n");
-        printf("5. Assign New Teacher\n");
-        printf("6. Save Timetable\n");
-        printf("7. Load Timetable\n");
-        printf("8. Exit\n");
-        printf("Enter choice: ");
+        printf(COLOR_HEADER "\n====== Classroom Scheduler ======\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "1. Display Timetable\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "2. Swap Classes\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "3. Change Class Section\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "4. Teacher Load Analysis\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "5. Assign New Teacher\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "6. Save Timetable\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "7. Load Timetable\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "8. Search Timetable\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "9. Set Notification/Reminder\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "10. Statistics Dashboard\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "11. Share Timetable via QR Code\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "12. Ownership\n" COLOR_RESET);
+        printf(CLI_COLOR_MENU "13. Exit\n" COLOR_RESET);
+        printf(COLOR_INPUT "Enter choice: " COLOR_RESET);
         scanf("%d", &choice);
-
         switch (choice) {
             case 1:
-                printf("\nEnter section (A/B/C/D): ");
-                scanf(" %c", &section);
-                if (section >= 'A' && section <= 'D') {
-                    printf("\nView Options:\n");
-                    printf("1. Full Week Timetable\n");
-                    printf("2. Specific Day Timetable\n");
-                    printf("Enter choice: ");
-                    scanf("%d", &viewChoice);
-
-                    switch(viewChoice) {
-                        case 1:
+                printf(COLOR_HILITE "\nDisplay Timetable Options:\n" COLOR_RESET);
+                printf("1. Display Full Timetable (All Sections)\n");
+                printf("2. Display Timetable for a Section\n");
+                printf(COLOR_INPUT "Enter choice: " COLOR_RESET);
+                scanf("%d", &subChoice);
+                if(subChoice == 1) {
+                    displayFullTimetable();
+                } else if(subChoice == 2) {
+                    printf(COLOR_INPUT "Enter section (A/B/C/D): " COLOR_RESET);
+                    scanf(" %c", &section);
+                    if (section >= 'A' && section <= 'D') {
+                        printf("1. Full Week Timetable\n2. Specific Day Timetable\n");
+                        printf(COLOR_INPUT "Enter choice: " COLOR_RESET);
+                        scanf("%d", &viewChoice);
+                        if(viewChoice == 1) {
                             printTimetable(section);
-                            break;
-                        case 2:
-                            printf("\nSelect Day:\n");
-                            printf("1. Monday\n");
-                            printf("2. Tuesday\n");
-                            printf("3. Wednesday\n");
-                            printf("4. Thursday\n");
-                            printf("5. Friday\n");
-                            printf("6. Saturday\n");
-                            printf("Enter choice (1-6): ");
+                        } else if(viewChoice == 2) {
+                            printf("Select Day:\n1. Monday\n2. Tuesday\n3. Wednesday\n4. Thursday\n5. Friday\n6. Saturday\n");
+                            printf(COLOR_INPUT "Enter choice (1-6): " COLOR_RESET);
                             scanf("%d", &dayChoice);
-                            
                             if(dayChoice >= 1 && dayChoice <= 6) {
                                 const char* days[] = {"MON", "TUE", "WED", "THU", "FRI", "SAT"};
                                 printDayTimetable(section, days[dayChoice-1]);
                             } else {
-                                printf("Invalid day choice!\n");
+                                printf(COLOR_ERROR "Invalid day choice!\n" COLOR_RESET);
                             }
-                            break;
-                        default:
-                            printf("Invalid view choice!\n");
+                        } else {
+                            printf(COLOR_ERROR "Invalid view choice!\n" COLOR_RESET);
+                        }
+                    } else {
+                        printf(COLOR_ERROR "Invalid section!\n" COLOR_RESET);
                     }
                 } else {
-                    printf("Invalid section! Please enter A, B, C, or D.\n");
+                    printf(COLOR_ERROR "Invalid display choice!\n" COLOR_RESET);
                 }
                 break;
             case 2:
-                printf("\nEnter first section (A/B/C/D): ");
-                scanf(" %c", &section1);
-                printf("Enter second section (A/B/C/D): ");
-                scanf(" %c", &section2);
-                if ((section1 >= 'A' && section1 <= 'D') && (section2 >= 'A' && section2 <= 'D')) {
-                    swapTeachers(section1, section2);
-                } else {
-                    printf("Invalid section! Please enter A, B, C, or D.\n");
-                }
+                swapClasses();
                 break;
             case 3:
-                printf("\nEnter current section (A/B/C/D): ");
+                printf(COLOR_INPUT "Enter current section (A/B/C/D): " COLOR_RESET);
                 scanf(" %c", &section1);
-                printf("Enter new section (A/B/C/D): ");
+                printf(COLOR_INPUT "Enter new section (A/B/C/D): " COLOR_RESET);
                 scanf(" %c", &section2);
                 if ((section1 >= 'A' && section1 <= 'D') && (section2 >= 'A' && section2 <= 'D')) {
                     changeClassSection(section1, section2);
                 } else {
-                    printf("Invalid section! Please enter A, B, C, or D.\n");
+                    printf(COLOR_ERROR "Invalid section!\n" COLOR_RESET);
                 }
                 break;
             case 4:
@@ -1225,18 +2042,50 @@ int main() {
                 assignNewTeacher();
                 break;
             case 6:
-                saveTimetable();
+                printf(COLOR_HILITE "\nSave Timetable Options:\n" COLOR_RESET);
+                printf("1. Save Full Timetable (All Sections)\n");
+                printf("2. Save Timetable for a Section\n");
+                printf(COLOR_INPUT "Enter choice: " COLOR_RESET);
+                scanf("%d", &saveChoice);
+                if(saveChoice == 1) {
+                    saveTimetable();
+                } else if(saveChoice == 2) {
+                    printf(COLOR_INPUT "Enter section (A/B/C/D): " COLOR_RESET);
+                    scanf(" %c", &section);
+                    if (section >= 'A' && section <= 'D') {
+                        displaySaveSectionTimetable(section);
+                    } else {
+                        printf(COLOR_ERROR "Invalid section!\n" COLOR_RESET);
+                    }
+                } else {
+                    printf(COLOR_ERROR "Invalid save choice!\n" COLOR_RESET);
+                }
                 break;
             case 7:
-                printf("\nEnter filename to load: ");
+                printf(COLOR_INPUT "Enter filename to load: " COLOR_RESET);
                 scanf(" %s", filename);
                 loadTimetable(filename);
                 break;
             case 8:
-                printf("Thank you for using Classroom Scheduler!\n");
+                searchTimetable();
+                break;
+            case 9:
+                setNotification();
+                break;
+            case 10:
+                statisticsDashboard();
+                break;
+            case 11:
+                shareTimetableViaQR();
+                break;
+            case 12:
+                showOwners();
+                break;
+            case 13:
+                printf(COLOR_HEADER "Thank you for using Classroom Scheduler!\n" COLOR_RESET);
                 return 0;
             default:
-                printf("Invalid choice. Please try again.\n");
+                printf(COLOR_ERROR "Invalid choice. Please try again.\n" COLOR_RESET);
         }
     }
     return 0;
